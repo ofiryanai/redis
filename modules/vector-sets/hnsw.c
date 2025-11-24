@@ -504,6 +504,12 @@ HNSW *hnsw_new(uint32_t vector_dim, uint32_t quant_type, uint32_t m) {
     HNSW *index = hmalloc(sizeof(HNSW));
     if (!index) return NULL;
 
+    /* Dimension sanity check. */
+    if (vector_dim == 0 || vector_dim > HNSW_MAX_DIM) {
+        hfree(index);
+        return NULL;
+    }
+
     /* M parameter sanity check. */
     if (m == 0) m = HNSW_DEFAULT_M;
     else if (m > HNSW_MAX_M) m = HNSW_MAX_M;

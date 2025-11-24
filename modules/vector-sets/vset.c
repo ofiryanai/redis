@@ -190,6 +190,12 @@ static inline uint32_t bit_count(uint32_t n) {
  * in the future we may change the weights generation, and we want everything
  * to be backward compatible. */
 float *createProjectionMatrix(uint32_t input_dim, uint32_t output_dim) {
+    /* Validate dimensions to avoid overflow and respect HNSW limits. */
+    if (input_dim == 0 || output_dim == 0 ||
+        input_dim > HNSW_MAX_DIM || output_dim > HNSW_MAX_DIM) {
+        return NULL;
+    }
+
     float *matrix = RedisModule_Alloc(sizeof(float) * input_dim * output_dim);
 
     /* Scale factor to normalize the projection. */
@@ -233,11 +239,15 @@ float *applyProjection(const float *input, const float *proj_matrix,
 /* Create the vector as HNSW+Dictionary combined data structure. */
 struct vsetObject *createVectorSetObject(unsigned int dim, uint32_t quant_type, uint32_t hnsw_M) {
     struct vsetObject *o;
+
+    /* Enforce dimension limit at object creation time. */
+    if (dim == 0 || dim > HNSW_MAX_DIM) return NULL;
+
     o = RedisModule_Alloc(sizeof(*o));
 
     o->id = VectorSetTypeNextId++;
     o->hnsw = hnsw_new(dim,quant_type,hnsw_M);
-    if (!o->hnsw) { // May fail because of mutex creation.
+    if (!o->hnsw) { // May fail because of mutex creation or invalid dim.
         RedisModule_Free(o);
         return NULL;
     }
@@ -386,7 +396,7 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
     {
         long long rdim;
         if (RedisModule_StringToLongLong(argv[start_idx+1],&rdim)
-            != REDISMODULE_OK || rdim <= 0)
+            != REDISMODULE_OK || rdim <= 0 || rdim > HNSW_MAX_DIM)
         {
             return NULL;
         }
@@ -408,6 +418,7 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
         // Must be 4 bytes per component.
         if (vec_raw_len % 4 || vec_raw_len < 4) return NULL;
         *dim = vec_raw_len/4;
+        if (*dim == 0 || *dim > HNSW_MAX_DIM) return NULL;
 
         vec = RedisModule_Alloc(vec_raw_len);
         if (!vec) return NULL;
@@ -417,7 +428,7 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
         if (argc < start_idx + 2) return NULL;  // Need at least the dimension.
         long long vdim; // Vector dimension passed by the user.
         if (RedisModule_StringToLongLong(argv[start_idx+1],&vdim)
-            != REDISMODULE_OK || vdim < 1) return NULL;
+            != REDISMODULE_OK || vdim < 1 || vdim > HNSW_MAX_DIM) return NULL;
 
         // Check that all the arguments are available.
         if (argc < start_idx + 2 + vdim) return NULL;
@@ -577,6 +588,12 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModuleString *attrib = NULL; // Attributes if passed via ATTRIB.
     if (!vec)
         return RedisModule_ReplyWithError(ctx,"ERR invalid vector specification");
+
+    /* Enforce maximum dimension limit for the resulting HNSW vectors. */
+    if (dim == 0 || dim > HNSW_MAX_DIM || (reduce_dim && reduce_dim > HNSW_MAX_DIM)) {
+        RedisModule_Free(vec);
+        return RedisModule_ReplyWithError(ctx,"ERR vector dimension exceeds maximum allowed (65536)");
+    }
 
     /* Missing element string at the end? */
     if (argc-2-consumed_args < 1) {
@@ -1966,6 +1983,9 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
         quant_type != HNSW_QUANT_Q8 &&
         quant_type != HNSW_QUANT_BIN) return NULL;
 
+    /* Enforce dimension limit from RDB as well. */
+    if (dim == 0 || dim > HNSW_MAX_DIM) return NULL;
+
     if (hnsw_m == 0) hnsw_m = 16; // Default, useful for RDB files predating
                                   // this configuration parameter: it was fixed
                                   // to 16.
@@ -1981,6 +2001,13 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
         uint32_t input_dim = RedisModule_LoadUnsigned(rdb);
         if (RedisModule_IsIOError(rdb)) goto ioerr;
         uint32_t output_dim = dim;
+
+        /* Validate dimensions for the projection matrix as well. */
+        if (input_dim == 0 || output_dim == 0 ||
+            input_dim > HNSW_MAX_DIM || output_dim > HNSW_MAX_DIM) {
+            goto ioerr;
+        }
+
         size_t matrix_size = sizeof(float) * input_dim * output_dim;
 
         vset->proj_matrix = RedisModule_Alloc(matrix_size);
