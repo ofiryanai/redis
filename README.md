@@ -36,6 +36,7 @@ This document serves as both a quick start guide to Redis and a detailed resourc
   - [Fixing problems building 32 bit binaries](#fixing-problems-building-32-bit-binaries)
   - [Allocator](#allocator)
   - [Monotonic clock](#monotonic-clock)
+  - [Inline LSE atomics on Linux AArch64 (Redis Query Engine)](#inline-lse-atomics-on-linux-aarch64-redis-query-engine)
   - [Verbose build](#verbose-build)
   - [Running Redis with TLS](#running-redis-with-tls)
 - [Code contributions](#code-contributions)
@@ -889,6 +890,28 @@ To build with support for the processor's internal instruction clock on other ar
 ```sh
 make CFLAGS="-DUSE_PROCESSOR_CLOCK"
 ```
+
+### Inline LSE atomics on Linux AArch64 (Redis Query Engine)
+
+When Redis is built with `BUILD_WITH_MODULES=yes` on Linux AArch64, the
+Redis Query Engine (RediSearch) module can be compiled with inline LSE
+atomics. This avoids the libgcc outline-atomics dispatcher and gives a
+measurable performance improvement on Armv8.1-a and newer cores
+(ARM Neoverse N1/V1/V2, i.e. AWS Graviton2/3/4, Apple Silicon, etc.),
+but the resulting binary requires Armv8.1-a+ (LSE) and module load
+fails with `SIGILL` on pre-Armv8.1-a cores — notably Cortex-A72,
+AWS Graviton1, and Raspberry Pi 4.
+
+To keep the default build loadable on every AArch64 CPU, inline LSE
+atomics are **disabled by default**. To opt into the optimization on
+Armv8.1-a+ cores:
+
+```sh
+make BUILD_WITH_MODULES=yes INLINE_LSE_ATOMICS=1
+```
+
+`INLINE_LSE_ATOMICS` defaults to `0` and only affects Linux AArch64
+builds; on other architectures and on macOS it has no effect.
 
 ### Verbose build
 
